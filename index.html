@@ -1,7 +1,12 @@
+<!doctype html>
+<html lang="ja">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>ハロウィザード</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=DotGothic16&display=swap">
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js" async></script>
 <style>
 /* Layout: 3×3 enemy grid vs 3×3 party grid (portrait = top/bottom, landscape = left/right), FF-style windows under the board */
 :root{
@@ -228,6 +233,16 @@ body{background:var(--night);color:var(--ink);font-family:var(--font-ui);margin:
 .song.on{border-color:var(--pumpkin);background:rgba(255,138,31,.2);box-shadow:0 0 8px rgba(255,138,31,.45)}
 .song.on::before{content:"▶ ";color:var(--pumpkin)}
 .tip{font-size:11px!important;text-align:center}
+.netcode{font-size:40px;letter-spacing:.25em;color:var(--gold);text-shadow:0 3px 0 #5a2a00,0 0 14px rgba(255,140,40,.6);font-variant-numeric:tabular-nums;padding-left:.25em}
+.joinrow{display:flex;gap:6px}
+.joinrow input{flex:1;min-width:0;font-family:var(--font-ui);font-size:20px;letter-spacing:.2em;text-align:center;color:var(--ink);background:rgba(0,0,0,.4);border:2px solid rgba(255,200,140,.5);border-radius:8px;padding:6px;-webkit-user-select:text;user-select:text}
+.joinrow input:focus{outline:none;border-color:var(--gold)}
+.joinrow .bigbtn{flex:none;padding:8px 16px}
+.netmsg{min-height:1.5em;color:#b8ffcb!important}
+.netmsg.err{color:var(--hp-low)!important}
+.nettag{flex:none;white-space:nowrap;font-size:10px;color:#b8ffcb;border:1px solid rgba(120,255,170,.5);border-radius:6px;padding:1px 6px;margin-left:6px;vertical-align:2px;letter-spacing:0}
+.dots::after{content:"";animation:dots 1.2s steps(4) infinite}
+@keyframes dots{0%{content:""}25%{content:"・"}50%{content:"・・"}75%{content:"・・・"}}
 #toast{position:absolute;left:50%;top:44px;transform:translateX(-50%);z-index:30001;padding:6px 16px;font-size:14px;white-space:nowrap;pointer-events:none}
 @media (orientation:landscape){ .sndwin{max-width:600px!important;gap:5px!important} .sndwin h2{font-size:19px!important} .song{min-height:0;padding:4px 6px;font-size:11px} .vol{width:24px;height:22px} .seg button{padding:3px 12px} .sndwin .bigbtn{padding:5px} .songs{grid-template-columns:repeat(4,1fr)} .songs:last-of-type{grid-template-columns:repeat(5,1fr)} }
 </style>
@@ -242,7 +257,7 @@ body{background:var(--night);color:var(--ink);font-family:var(--font-ui);margin:
     <div class="spider"><i></i></div>
   </div>
   <div class="topbar">
-    <h1>ハロウィザード</h1>
+    <div style="display:flex;align-items:center;min-width:0"><h1>ハロウィザード</h1><span class="nettag" id="netTag" hidden>通信中</span></div>
     <div style="display:flex;gap:6px;flex:none"><button class="iconbtn" id="artBtn" type="button">え：ドット</button><button class="iconbtn" id="soundBtn" type="button">おと</button></div>
   </div>
   <div id="board">
@@ -510,7 +525,7 @@ sndLabel();
 
 /* ---------- setup ---------- */
 function shuffle(a){for(let i=a.length-1;i>0;i--){const j=Math.random()*(i+1)|0;[a[i],a[j]]=[a[j],a[i]]}return a}
-function setupTeams(){
+function setupTeams(netMode){
   const keys=shuffle(Object.keys(CH));
   units=[];
   const place=(side,list)=>{
@@ -518,12 +533,21 @@ function setupTeams(){
     list.forEach((k,i)=>{const s=spots[i];const c=CH[k];
       units.push({id:side+k,key:k,side,lane:s%3,depth:(s/3|0),hp:c.hp,mp:c.mp,atb:Math.random()*45,ready:false,defending:false,ko:false})});
   };
-  place('A',keys.slice(0,3)); place('E',keys.slice(3));
-  inv={A:{potion:3,ether:2,bomb:2},E:{potion:2,ether:1,bomb:1}};
+  if(netMode){ /* 通信対戦は 3人 対 3人（5人から べつべつに引くので かぶることもある） */
+    place('A',keys.slice(0,3)); place('E',shuffle(Object.keys(CH)).slice(0,3));
+    inv={A:{potion:3,ether:2,bomb:2},E:{potion:3,ether:2,bomb:2}};
+  }else{
+    place('A',keys.slice(0,3)); place('E',keys.slice(3));
+    inv={A:{potion:3,ether:2,bomb:2},E:{potion:2,ether:1,bomb:1}};
+  }
   queue=[];actor=null;pending=null;aim=null;busy=false;
   buildUnits(); layout(); renderStatus(); renderCmd();
-  $('#teamPreview').innerHTML=`<div class="t"><b>みかた</b>${units.filter(u=>u.side==='A').map(u=>CH[u.key].name).join('<br>')}</div>
-    <div class="t"><b>てき（CPU）</b>${units.filter(u=>u.side==='E').map(u=>CH[u.key].name).join('<br>')}</div>`;
+  renderPreview();
+  if(netMode) nsend({t:'setup',u:units.map(u=>[u.key,u.side,u.lane,u.depth,u.hp,u.mp,u.atb]),inv});
+}
+function renderPreview(){const el=$('#teamPreview'); if(!el) return;
+  el.innerHTML=`<div class="t"><b>みかた</b>${units.filter(u=>u.side==='A').map(u=>CH[u.key].name).join('<br>')}</div>
+    <div class="t"><b>${netOn()?'あいて':'てき（CPU）'}</b>${units.filter(u=>u.side==='E').map(u=>CH[u.key].name).join('<br>')}</div>`;
 }
 
 /* ---------- geometry ---------- */
@@ -722,7 +746,9 @@ function targetsOf(user,act,l,d){
   const side=isAlly(act.type)?user.side:(user.side==='A'?'E':'A');
   return area(act.type,l,d).map(([a,b])=>at(side,a,b)).filter(u=>u&&!u.ko);
 }
-const rnd=(a,b)=>a+Math.random()*(b-a);
+let RNG=Math.random;
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+const rnd=(a,b)=>a+RNG()*(b-a);
 const ROWA=[1,.9,.75], ROWD=[1,.9,.8];
 function physDmg(a,t,r=1){const c=CH[a.key];return Math.max(1,Math.round((c.atk*r*ROWA[a.depth]*ROWD[t.depth]-CH[t.key].def*.4)*(t.defending?.5:1)))}
 function magDmg(a,t,pow,r=1){return Math.max(1,Math.round((CH[a.key].mag*pow*r-CH[t.key].def*.2)*(t.defending?.5:1)))}
@@ -730,14 +756,19 @@ function magDmg(a,t,pow,r=1){return Math.max(1,Math.round((CH[a.key].mag*pow*r-C
 /* ---------- main loop ---------- */
 function loop(ts){
   const dt=Math.min(.1,(ts-last)/1000||0); last=ts;
-  if(state==='battle'&&!busy&&!actor&&!soundOpen){
+  if(state==='battle'&&!busy&&!actor&&!soundOpen&&!(net&&net.role==='guest')&&!(net&&net.waitI!=null)){
     for(const u of units){ if(u.ko||u.ready) continue;
       u.atb=Math.min(100,u.atb+CH[u.key].spd*dt);
       if(u.atb>=100){u.ready=true;u.defending=false;updTag(u);queue.push(u);if(u.side==='A')sfx('ready')}
     }
     queue=queue.filter(u=>!u.ko);
-    if(queue.length){const u=queue.shift(); if(u.side==='A') openCmd(u); else cpuTurn(u);}
+    if(queue.length){const u=queue.shift();
+      if(netOn()){ nsend(snap());
+        if(u.side==='A') openCmd(u); else {net.waitI=ui(u);renderCmd()}
+        nsend({t:'turn',i:ui(u)});
+      } else if(u.side==='A') openCmd(u); else cpuTurn(u);}
     renderBars();
+    if(netOn()&&ts-net.lastAtb>150){net.lastAtb=ts;nsend({t:'atb',a:units.map(u=>Math.round(u.atb))})}
   }
   partsDraw(dt);
   requestAnimationFrame(loop);
@@ -757,7 +788,7 @@ function renderBars(){
       const hp=r.querySelector('.hp'); hp.textContent=`${u.hp}/${c.hp}`; hp.classList.toggle('low',u.hp<c.hp*.3);
       r.querySelector('.mp').textContent=`MP ${u.mp}`; r.querySelector('.atb i').style.width=u.atb+'%';
       r.querySelector('.atb').classList.toggle('full',u.atb>=100&&!u.ko); r.classList.toggle('ko',u.ko); r.classList.toggle('now',u===actor);
-    }else{const s=document.querySelector(`[data-e="${u.id}"]`); if(s) s.textContent=`てき ${CH[u.key].name}${u.ko?'（たおれた）':''}`}
+    }else{const s=document.querySelector(`[data-e="${u.id}"]`); if(s) s.textContent=`${netOn()?'あいて':'てき'} ${CH[u.key].name}${u.ko?'（たおれた）':''}`}
   });
 }
 
@@ -767,7 +798,10 @@ function btn(label,fn,opt={}){const b=document.createElement('button');b.type='b
   b.innerHTML=label;if(opt.disabled)b.disabled=true;b.onclick=()=>{audio();fn()};return b}
 function renderCmd(){
   cmdlist.innerHTML=''; clearMarks();
-  if(!actor){$('#who').textContent=state==='battle'?'ゲージをためているよ…':'';return}
+  if(!actor){const th=net&&(net.waitI!=null||net.thinkI!=null);
+    $('#who').textContent=state!=='battle'?'':th?`あいての${CH[units[net.waitI??net.thinkI].key].name}が かんがえ中…`:'ゲージをためているよ…';
+    if(th){const t=units[net.waitI??net.thinkI];markCell(t.side,t.lane,t.depth,'actor')}
+    return}
   const c=CH[actor.key]; $('#who').textContent=c.name;
   markCell(actor.side,actor.lane,actor.depth,'actor');
   if(!pending){
@@ -819,9 +853,8 @@ function onCell(side,l,d){
   if(!pending){
     if(side!=='A') return;
     if(l===actor.lane&&d===actor.depth) return;
-    const o=at('A',l,d); if(o&&o.ko) return;
-    if(o){o.lane=actor.lane;o.depth=actor.depth;placeUnit(o)}
-    actor.lane=l;actor.depth=d;placeUnit(actor);sfx('move');renderCmd();return;
+    if(!doMove(actor,l,d)) return;
+    nsend({t:'move',i:ui(actor),l,d}); renderCmd();return;
   }
   if(noAim(pending.type)) return;
   const want=isAlly(pending.type)?'A':'E'; if(side!==want) return;
@@ -851,20 +884,37 @@ async function quickAttack(l,d){
     p.textContent=t&&!t.ko?'とどかない':'だれもいない'; Object.assign(p.style,{left:f.x+'px',top:f.y-geo.h*.6+'px'});
     unitsEl.appendChild(p); setTimeout(()=>p.remove(),950); return;
   }
-  const u=actor; actor=null;pending=null;aim=null;busy=true;renderCmd();
-  await perform(u,{kind:'attack',n:'たたかう',type:'single',el:'slash'},l,d);
-  endTurn(u); busy=false; checkEnd(); renderBars();
+  await submitAct(actor,{kind:'attack',n:'たたかう',type:'single',el:'slash'},l,d);
 }
 function openCmd(u){actor=u;pending=null;aim=null;renderCmd();renderBars()}
 function endTurn(u){u.atb=0;u.ready=false;updTag(u)}
-async function doDefend(){
-  const u=actor; actor=null; busy=true; renderCmd();
-  await say(`${CH[u.key].name}は みをまもっている`); u.defending=true; endTurn(u); busy=false; renderBars();
-}
+async function doDefend(){ await submitAct(actor,{kind:'defend'},0,0) }
 async function confirmAct(){
   if(!aim||!aim.hits.length) return;
-  const u=actor,p=pending,a=aim; actor=null;pending=null;aim=null;busy=true;renderCmd();
-  await perform(u,p,a.l,a.d); endTurn(u); busy=false; checkEnd(); renderBars();
+  await submitAct(actor,pending,aim.l,aim.d);
+}
+function doMove(u,l,d){
+  const o=at(u.side,l,d); if(o===u) return false; if(o&&o.ko) return false;
+  if(o){o.lane=u.lane;o.depth=u.depth;placeUnit(o)}
+  u.lane=l;u.depth=d;placeUnit(u);sfx('move');return true;
+}
+/* 行動の決定：ひとり用はそのまま、通信のときはホストが乱数のたねを決めて両方で同じ結果にする */
+async function submitAct(u,p,l,d){
+  actor=null;pending=null;aim=null;busy=true;renderCmd();
+  if(netOn()&&net.role==='guest'){ nsend({t:'act',i:ui(u),p,l,d}); return } // ホストの返事をまつ
+  const seed=Math.random()*4294967296>>>0;
+  if(netOn()) nsend({t:'act',i:ui(u),p,l,d,seed});
+  await runAct(u,p,l,d,seed);
+  if(netOn()) nsend(snap());
+  busy=false; checkEnd(); renderBars();
+}
+async function runAct(u,p,l,d,seed){
+  RNG=mulberry32(seed);
+  try{
+    if(p.kind==='defend'){await say(`${CH[u.key].name}は みをまもっている`);u.defending=true}
+    else await perform(u,p,l,d);
+  }finally{RNG=Math.random}
+  endTurn(u);
 }
 
 /* ---------- action resolution ---------- */
@@ -942,21 +992,153 @@ function checkEnd(){
   setTimeout(()=>{ sfx(aAlive?'win':'lose'); setTimeout(()=>{if(state==='over'&&!soundOpen)bgm(SND.title)},2200);
     $('#overlay').querySelector('.win').innerHTML=`<div class="ttl"><span class="pk"></span><span class="pk big"></span><span class="pk"></span></div><h2 class="logo">${aAlive?'しょうり！':'ぜんめつ…'}</h2>
       <p>${aAlive?'ハロウィンの夜は あたいたちのもの！':'つぎは 配置をくふうしてみよう'}</p>
-      <button class="bigbtn" id="againBtn" type="button">もういちど</button>`;
-    $('#overlay').hidden=false; $('#againBtn').onclick=()=>{audio();sfx('cursor');resetTitle()};
+      ${!netOn()?'<button class="bigbtn" id="againBtn" type="button">もういちど</button>'
+        :net.role==='host'?'<button class="bigbtn" id="againBtn" type="button">もういちど（おなじあいて）</button><button class="subbtn" id="quitBtn" type="button">つうしんをやめる</button>'
+        :'<p class="netmsg dots">ホストが つぎの勝負を じゅんび中</p><button class="subbtn" id="quitBtn" type="button">つうしんをやめる</button>'}`;
+    $('#overlay').hidden=false;
+    const ag=$('#againBtn'); if(ag) ag.onclick=()=>{audio();sfx('cursor');netOn()?hostLobby():resetTitle()};
+    const qb=$('#quitBtn'); if(qb) qb.onclick=()=>{audio();sfx('back');netClose();resetTitle()};
   },700);
 }
 function resetTitle(){
+  if(net) netClose();
   $('#overlay').querySelector('.win').innerHTML=TITLE_HTML;
   bindTitle(); state='title'; setupTeams(); $('#overlay').hidden=false; bgm(SND.title);
 }
 const TITLE_HTML=`<div class="ttl"><span class="pk"></span><span class="pk big"></span><span class="pk"></span></div>
     <h2 class="logo">ハロウィザード</h2><div class="sub">〜 トリック・オア・トリート 〜</div><div class="teams" id="teamPreview"></div>
     <p>ゲージがたまった子から動けるよ。<br>コマンドをえらぶ間は、じぶんのマスをタップして配置がえできる。</p>
-    <button class="bigbtn" id="startBtn" type="button">たたかう！</button><button class="subbtn" id="shuffleBtn" type="button">チームをまぜなおす</button>`;
+    <button class="bigbtn" id="startBtn" type="button">たたかう！（CPU）</button><button class="bigbtn" id="netBtn" type="button" style="background:linear-gradient(180deg,#d9b8ff,#8a55e0);color:#1a0838;box-shadow:0 3px 0 #3a1f6e,0 0 14px rgba(160,100,255,.55)">つうしんたいせん</button><button class="subbtn" id="shuffleBtn" type="button">チームをまぜなおす</button>`;
 function bindTitle(){
-  $('#startBtn').onclick=()=>{audio();sfx('cursor');$('#overlay').hidden=true;state='battle';battlePick=null;renderCmd();bgm(sceneSong())};
+  $('#startBtn').onclick=()=>{audio();sfx('cursor');startBattle()};
   $('#shuffleBtn').onclick=()=>{audio();sfx('move');setupTeams()};
+  $('#netBtn').onclick=()=>{audio();sfx('cursor');netMenu()};
+}
+function startBattle(){$('#overlay').hidden=true;state='battle';battlePick=null;renderCmd();bgm(sceneSong())}
+
+/* ---------- 通信たいせん（PeerJS） ----------
+   ホスト＝へやをつくった人。ゲージの計算・CPUの代わりの順番決め・ダメージの乱数はホストが決めて、
+   ゲスト側は自分のチームを「みかた(A)」として、あいてを「てき(E)」として見る（左右ではなく陣地ごと入れかえ） */
+let net=null;
+const NET_PREFIX='hallowizard-v1-';
+const netOn=()=>!!(net&&net.on);
+const ui=u=>units.indexOf(u);
+const flipSide=s=>s==='A'?'E':'A';
+function nsend(m){try{if(net&&net.conn&&net.conn.open)net.conn.send(m)}catch(e){}}
+function snap(){return {t:'sync',u:units.map(u=>[u.lane,u.depth,u.hp,u.mp,u.atb,u.ko?1:0,u.defending?1:0]),inv}}
+function applySnap(m){
+  m.u.forEach((s,i)=>{const u=units[i]; if(!u) return; const mv=u.lane!==s[0]||u.depth!==s[1];
+    u.lane=s[0];u.depth=s[1];u.hp=s[2];u.mp=s[3];u.atb=s[4];u.ko=!!s[5];u.defending=!!s[6]; if(mv)placeUnit(u); updTag(u)});
+  inv={A:m.inv.E,E:m.inv.A}; renderBars();
+}
+function ovl(html){$('#overlay').querySelector('.win').innerHTML=html;$('#overlay').hidden=false}
+function netMsg(t,err){const el=$('#netMsg');if(el){el.textContent=t;el.classList.toggle('err',!!err);el.classList.toggle('dots',!err&&/中$/.test(t))}}
+function netMenu(){
+  ovl(`<h2>つうしんたいせん</h2>
+    <p>ひとりが「へやをつくる」、もうひとりが<br>そのばんごうを入れて「はいる」よ</p>
+    <button class="bigbtn" id="hostBtn" type="button">へやをつくる</button>
+    <div class="joinrow"><input id="codeIn" inputmode="numeric" pattern="[0-9]*" maxlength="4" placeholder="ばんごう" autocomplete="off"><button class="bigbtn" id="joinBtn" type="button">はいる</button></div>
+    <p class="netmsg" id="netMsg"></p>
+    <button class="subbtn" id="netBack" type="button">もどる</button>`);
+  $('#hostBtn').onclick=()=>{audio();sfx('cursor');netHost()};
+  $('#joinBtn').onclick=()=>{audio();sfx('cursor');netJoin($('#codeIn').value)};
+  $('#codeIn').addEventListener('keydown',e=>{if(e.key==='Enter')$('#joinBtn').click()});
+  $('#netBack').onclick=()=>{audio();sfx('back');resetTitle()};
+}
+function needPeer(){
+  if(window.Peer) return true;
+  netMsg('通信のじゅんびが まだ…ネットにつながってるか見てね',true); return false;
+}
+function peerErr(e){
+  const t=e&&e.type;
+  if(t==='unavailable-id'&&net&&net.role==='host'&&!net.on){netClose();netHost();return}
+  const msg=t==='peer-unavailable'?'そのばんごうの へやが 見つからない…':t==='network'||t==='server-error'||t==='socket-error'?'通信サーバーに つながらない…':'通信エラー（'+(t||'?')+'）';
+  if(net&&net.on){netLost();return}
+  netMsg(msg,true); if(net&&net.role==='guest'){netClose()}
+}
+function netHost(){
+  if(!needPeer()) return; netClose();
+  const code=String(1000+Math.random()*9000|0);
+  net={role:'host',on:false,code,waitI:null,thinkI:null,lastAtb:0,chain:Promise.resolve()};
+  ovl(`<h2>へやをつくったよ</h2><p>このばんごうを あいてに教えてね</p>
+    <div class="netcode">${code}</div><p class="netmsg dots" id="netMsg">あいてを まってる</p>
+    <button class="subbtn" id="netBack" type="button">やめる</button>`);
+  $('#netBack').onclick=()=>{audio();sfx('back');netClose();netMenu()};
+  const peer=new Peer(NET_PREFIX+code); net.peer=peer;
+  peer.on('error',peerErr);
+  peer.on('connection',conn=>{ if(net.conn){try{conn.close()}catch(e){} return} bindConn(conn) });
+}
+function netJoin(raw){
+  const code=String(raw||'').replace(/[^0-9]/g,'');
+  if(code.length!==4){netMsg('ばんごうは 4けただよ',true);return}
+  if(!needPeer()) return; netClose();
+  net={role:'guest',on:false,code,waitI:null,thinkI:null,lastAtb:0,chain:Promise.resolve()};
+  netMsg('つないでる中');
+  const peer=new Peer(); net.peer=peer;
+  peer.on('error',peerErr);
+  peer.on('open',()=>{ bindConn(peer.connect(NET_PREFIX+code,{reliable:true})) });
+}
+function bindConn(conn){
+  const me=net; me.conn=conn;
+  conn.on('open',()=>{ if(net!==me) return; me.on=true; $('#netTag').hidden=false; sfx('ready');
+    if(me.role==='host') hostLobby();
+    else ovl(`<h2>つながった！</h2><p class="netmsg dots">ホストが じゅんび中</p><button class="subbtn" id="quitBtn" type="button">やめる</button>`),$('#quitBtn').onclick=()=>{netClose();resetTitle()};
+  });
+  conn.on('data',m=>{ if(net!==me) return; me.chain=me.chain.then(()=>onNet(m)).catch(e=>console.error(e)) });
+  conn.on('close',()=>{ if(net===me) netLost() });
+  conn.on('error',()=>{ if(net===me) netLost() });
+}
+function netClose(){
+  const n=net; net=null; $('#netTag').hidden=true;
+  if(!n) return; try{n.conn&&n.conn.close()}catch(e){} try{n.peer&&n.peer.destroy()}catch(e){}
+}
+function netLost(){
+  const wasBattle=state==='battle';
+  netClose(); state='over'; actor=null; pending=null; aim=null; busy=false; renderCmd(); bgm(SND.title);
+  ovl(`<h2>つうしんが きれちゃった</h2><p>${wasBattle?'勝負はここまで…':'あいてが いなくなったみたい'}</p><button class="bigbtn" id="againBtn" type="button">タイトルへ</button>`);
+  $('#againBtn').onclick=()=>{audio();sfx('cursor');resetTitle()};
+}
+const LOBBY_HTML=(host)=>`<div class="ttl"><span class="pk"></span><span class="pk big"></span><span class="pk"></span></div>
+  <h2 class="logo">つうしんたいせん</h2><div class="sub">〜 3にん たい 3にん 〜</div><div class="teams" id="teamPreview"></div>
+  ${host?'<button class="bigbtn" id="startBtn" type="button">たたかう！</button><button class="subbtn" id="shuffleBtn" type="button">チームをまぜなおす</button>'
+        :'<p class="netmsg dots">ホストが はじめるのを まってる</p>'}
+  <button class="subbtn" id="quitBtn" type="button">つうしんをやめる</button>`;
+function hostLobby(){
+  state='title'; net.waitI=null; net.thinkI=null; bgm(SND.title);
+  ovl(LOBBY_HTML(true)); setupTeams(true);
+  $('#startBtn').onclick=()=>{audio();sfx('cursor');nsend({t:'start'});startBattle()};
+  $('#shuffleBtn').onclick=()=>{audio();sfx('move');setupTeams(true)};
+  $('#quitBtn').onclick=()=>{audio();sfx('back');resetTitle()};
+}
+async function onNet(m){
+  if(!m||!m.t) return;
+  const G=net.role==='guest';
+  if(m.t==='setup'&&G){
+    state='title'; net.thinkI=null; bgm(SND.title);
+    units=m.u.map(([key,side,lane,depth,hp,mp,atb])=>{const sd=flipSide(side);return {id:sd+key,key,side:sd,lane,depth,hp,mp,atb,ready:false,defending:false,ko:false}});
+    inv={A:m.inv.E,E:m.inv.A}; queue=[];actor=null;pending=null;aim=null;busy=false;
+    ovl(LOBBY_HTML(false)); $('#quitBtn').onclick=()=>{audio();sfx('back');resetTitle()};
+    buildUnits(); layout(); renderStatus(); renderCmd(); renderPreview(); return;
+  }
+  if(m.t==='start'&&G){ sfx('cursor'); startBattle(); return }
+  if(state!=='battle') return;
+  if(m.t==='atb'&&G){ m.a.forEach((v,i)=>{if(units[i])units[i].atb=v}); renderBars(); return }
+  if(m.t==='sync'&&G){ applySnap(m); checkEnd(); return }
+  if(m.t==='turn'&&G){ const u=units[m.i]; if(!u) return;
+    if(u.side==='A'){ net.thinkI=null; sfx('ready'); openCmd(u) } else { net.thinkI=m.i; renderCmd() }
+    return }
+  if(m.t==='move'){ const u=units[m.i]; if(!u) return;
+    if(!G&&net.waitI!==m.i) return; // ホスト：いま考えてる子だけ動かせる
+    doMove(u,m.l,m.d); renderCmd(); return }
+  if(m.t==='act'){ const u=units[m.i]; if(!u||u.ko) return;
+    if(G){ net.thinkI=null; busy=true; renderCmd();
+      await runAct(u,m.p,m.l,m.d,m.seed); busy=false; checkEnd(); renderBars(); return }
+    if(net.waitI!==m.i) return;
+    net.waitI=null; busy=true; renderCmd();
+    const seed=Math.random()*4294967296>>>0;
+    nsend({t:'act',i:m.i,p:m.p,l:m.l,d:m.d,seed});
+    await runAct(u,m.p,m.l,m.d,seed); nsend(snap());
+    busy=false; checkEnd(); renderBars(); return }
 }
 
 buildCells(); drawWeb(); $('#overlay').querySelector('.win').innerHTML=TITLE_HTML; bindTitle(); setupTeams(); bgm(SND.title);
